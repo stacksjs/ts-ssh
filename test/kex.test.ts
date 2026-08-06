@@ -63,7 +63,7 @@ describe('negotiateAll', () => {
     if (!('failed' in agreed)) {
       expect(agreed.kex).toBe('curve25519-sha256')
       expect(agreed.hostKey).toBe('ssh-ed25519')
-      expect(agreed.cipherClientToServer).toBe('chacha20-poly1305@openssh.com')
+      expect(agreed.cipherClientToServer).toBe('aes256-gcm@openssh.com')
     }
   })
 

@@ -114,11 +114,35 @@ ts-ssh keys ~/.ssh/authorized_keys       # what is in it, and what could not be 
 ts-ssh fingerprint "ssh-ed25519 AAAA…"   # SHA256:…
 ```
 
+### Encrypting a packet
+
+```ts
+import { createPacketCipher, keyLengthsFor } from '@stacksjs/ts-ssh'
+
+const lengths = keyLengthsFor('aes256-gcm@openssh.com')
+const cipher = createPacketCipher({ cipher: 'aes256-gcm@openssh.com', key, iv })
+
+const wire = cipher.seal(sequence, payload)
+const back = cipher.open(sequence, wire)
+```
+
+The sequence number is an argument rather than internal state, because it is
+what stops a packet being replayed at a different point in the stream - and it
+has to be the same number both sides are counting.
+
+Two constructions, both authenticated: `aes256-gcm@openssh.com` and
+`aes128-gcm@openssh.com` (RFC 5647, length authenticated as additional data),
+and `aes256-ctr`/`aes128-ctr` with `hmac-sha2-*-etm@openssh.com`. Only the
+encrypt-then-MAC variants: the older encrypt-and-MAC form requires decrypting a
+block to learn the length *before* anything has been authenticated, which means
+acting on bytes an attacker chose.
+
 ## What is implemented
 
 - **Wire format** - every type in RFC 4251 §5, read and written, bounds-checked
 - **Public keys** - `authorized_keys` lines, wire blobs, fingerprints; ed25519, RSA and ECDSA read, unknown types carried without pretending to understand them
 - **Packet protocol** - framing, the padding arithmetic, the version exchange and its line buffering
+- **Ciphers** - AES-GCM and AES-CTR with encrypt-then-MAC, with the offer derived from what is implemented
 - **Key exchange** - algorithm negotiation, the exchange hash, and the six derived keys of RFC 4253 §7.2
 - **Public key authentication** - the signed blob of RFC 4252 §7, and ed25519 verification
 
@@ -126,15 +150,21 @@ ts-ssh fingerprint "ssh-ed25519 AAAA…"   # SHA256:…
 
 Being plain about it, because a half-built SSH server is worse than none:
 
-- **Ciphers.** `chacha20-poly1305@openssh.com` and the GCM modes are negotiated
-  but not yet applied, so there is no encrypted transport.
-- **The connection layer.** Channels, `exec`, and the window accounting.
+- **The connection layer.** Channels, `exec`, and the window accounting. This is
+  the remaining piece between here and running a command over SSH.
+- **`chacha20-poly1305@openssh.com`**, and deliberately. It needs raw ChaCha20
+  and a bare Poly1305 over the ciphertext - not the RFC 8439 AEAD construction,
+  which appends length blocks this does not. Bun's crypto exposes neither, so
+  offering it would mean hand-writing Poly1305: modular arithmetic whose timing
+  leaks the key if it is not constant time, in a runtime that makes no such
+  guarantee. Every OpenSSH since 6.2 speaks AES-GCM.
 - **Signature verification beyond ed25519.** RSA and ECDSA keys are read and
   fingerprinted; a signature over one is refused rather than trusted, which is
   the safe direction to be incomplete in.
 
-The layers that exist are the ones a host needs to store keys, recognise them,
-and check a proof. The transport is next.
+A name in a KEXINIT list is a promise to apply it, so the offered ciphers are
+derived from the ones implemented rather than written out beside them - and a
+test fails if the two ever drift apart.
 
 ## Testing
 

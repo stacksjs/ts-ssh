@@ -20,14 +20,18 @@ very little about a protocol.
 - **[The wire format](/usage#the-wire-format)** - `Reader`, `Writer`
 - **[Public keys](/usage#reading-keys)** - `parseAuthorizedKey`, `fingerprintOf`, `sameKey`
 - **[Packets](/usage#packets)** - `framePacket`, `paddingFor`, `parseIdentification`
+- **[Ciphers](/usage#ciphers)** - `createPacketCipher`, `keyLengthsFor`
 - **[Key exchange](/usage#key-exchange)** - `negotiateAll`, `exchangeHash`, `deriveKey`
 - **[Authentication](/usage#authentication)** - `readUserAuthRequest`, `verifyUserAuthSignature`
 
 ## What is not here yet
 
-A half-built SSH server is worse than none, so this is stated plainly: there is
-no encrypted transport yet. The ciphers are negotiated but not applied, and the
-connection layer - channels, `exec`, window accounting - is not written.
+A half-built SSH server is worse than none, so this is stated plainly: the
+connection layer - channels, `exec`, window accounting - is not written. That is
+the remaining piece between here and running a command over SSH.
 
-What exists is what a host needs to store keys, recognise them, and check a
-proof that somebody holds one. The transport is next.
+`chacha20-poly1305@openssh.com` is deliberately absent rather than pending. It
+needs raw ChaCha20 and a bare Poly1305 over the ciphertext, neither of which
+Bun's crypto exposes, so offering it would mean hand-writing a MAC whose timing
+leaks its key if it is not constant time. Every OpenSSH since 6.2 speaks
+AES-GCM.

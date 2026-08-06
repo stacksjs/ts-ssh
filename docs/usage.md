@@ -69,6 +69,34 @@ source so a test can be deterministic, and defaults to real randomness.
 delivering it, and a line can be split across two reads. Losing that remainder
 is the bug that works on a fast connection and not on a slow one.
 
+## Ciphers
+
+```ts
+import { createPacketCipher, keyLengthsFor } from '@stacksjs/ts-ssh'
+
+const lengths = keyLengthsFor('aes256-gcm@openssh.com')
+const cipher = createPacketCipher({ cipher: 'aes256-gcm@openssh.com', key, iv })
+
+cipher.seal(sequence, payload)      // framed, padded, encrypted, authenticated
+cipher.packetLength(firstFourBytes) // how much to read
+cipher.open(sequence, packet)       // authenticated, then decrypted
+```
+
+The sequence number is an argument rather than internal state: it is what stops
+a packet being replayed at a different point in the stream, and both sides have
+to be counting the same thing.
+
+`open` authenticates before it decrypts, and returns nothing partial on failure.
+A caller that acts on unverified plaintext is acting on bytes an attacker chose.
+
+Padding is random, and the source is injectable so a test can be deterministic -
+but it defaults to real randomness, because the padding is what hides the length
+of a password.
+
+**Only what can be applied is offered.** `ALGORITHMS.cipher` is derived from the
+implemented set rather than written beside it: a name in a KEXINIT list is a
+promise, and a hand-kept list drifts from the code that has to keep it.
+
 ## Key exchange
 
 ```ts

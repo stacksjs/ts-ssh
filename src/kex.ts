@@ -32,15 +32,32 @@
 
 import { ProtocolError, Reader, Writer } from './buffer'
 
-/** What this offers, in preference order. */
+/**
+ * What this offers, in preference order.
+ *
+ * The cipher and MAC lists are **derived from what is implemented** rather than
+ * written out beside it. A name in a KEXINIT list is a promise to apply it, and
+ * a hand-kept list drifts from the code that has to honour it: this offered
+ * `chacha20-poly1305@openssh.com` and plain `hmac-sha2-256` before the cipher
+ * layer existed, which would have produced a handshake that completed and a
+ * connection that then did nothing.
+ *
+ * Preference is strongest first. AES-256 over AES-128 because there is no cost
+ * worth the difference here, and GCM over CTR because one construction is
+ * harder to get wrong than a cipher and a MAC that have to agree.
+ */
 export const ALGORITHMS = {
   kex: ['curve25519-sha256', 'curve25519-sha256@libssh.org'],
   hostKey: ['ssh-ed25519'],
-  cipher: ['chacha20-poly1305@openssh.com', 'aes256-gcm@openssh.com'],
-  // Both ciphers above authenticate their own data, so the MAC list is what a
-  // peer would use with a cipher that does not. It is offered for the same
-  // reason it is listed by everybody: negotiation has to produce *something*.
-  mac: ['hmac-sha2-256', 'hmac-sha2-512'],
+  cipher: [
+    'aes256-gcm@openssh.com',
+    'aes128-gcm@openssh.com',
+    'aes256-ctr',
+    'aes128-ctr',
+  ],
+  // Only the encrypt-then-MAC variants, and only for the ciphers that need
+  // one. A cipher that authenticates its own data answers `<implicit>` here.
+  mac: ['hmac-sha2-256-etm@openssh.com', 'hmac-sha2-512-etm@openssh.com'],
   compression: ['none'],
 } as const
 
