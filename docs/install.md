@@ -1,11 +1,11 @@
 # Installation
 
 ```bash
-bun add ts-ssh
+bun add @stacksjs/ts-ssh
 ```
 
 ```bash
-npm install ts-ssh
+npm install @stacksjs/ts-ssh
 ```
 
 ## The CLI

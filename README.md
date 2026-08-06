@@ -25,7 +25,7 @@ fixtures this library produced, which would only prove it agrees with itself.
 ## Install
 
 ```bash
-bun add ts-ssh
+bun add @stacksjs/ts-ssh
 ```
 
 ## Usage
@@ -37,7 +37,7 @@ moves between them: the `authorized_keys` line somebody pasted, the wire blob a
 signature is checked against, and the fingerprint a person compares.
 
 ```ts
-import { parseAuthorizedKey, parseAuthorizedKeys, sameKey } from 'ts-ssh'
+import { parseAuthorizedKey, parseAuthorizedKeys, sameKey } from '@stacksjs/ts-ssh'
 
 const key = parseAuthorizedKey('ssh-ed25519 AAAAC3Nza… ada@example.com')
 // { type, blob, fingerprint: 'SHA256:…', publicKey, bits, options, comment }
@@ -58,7 +58,7 @@ the way you would want.
 ### Verifying that somebody holds a key
 
 ```ts
-import { readUserAuthRequest, verifyUserAuthSignature } from 'ts-ssh'
+import { readUserAuthRequest, verifyUserAuthSignature } from '@stacksjs/ts-ssh'
 
 const request = readUserAuthRequest(payload)
 const proof = verifyUserAuthSignature({ sessionId, request })
@@ -76,7 +76,7 @@ those refusals.
 ### The wire format
 
 ```ts
-import { Reader, Writer } from 'ts-ssh'
+import { Reader, Writer } from '@stacksjs/ts-ssh'
 
 const blob = new Writer().string('ssh-ed25519').string(point).done()
 const reader = new Reader(blob)
@@ -95,7 +95,7 @@ is not read back as negative. Both are pinned against the examples in RFC 4251.
 ### Packets and key exchange
 
 ```ts
-import { deriveKey, exchangeHash, framePacket, negotiateAll, unframePacket } from 'ts-ssh'
+import { deriveKey, exchangeHash, framePacket, negotiateAll, unframePacket } from '@stacksjs/ts-ssh'
 ```
 
 `negotiateAll` picks *the client's* first choice that the server also offers,

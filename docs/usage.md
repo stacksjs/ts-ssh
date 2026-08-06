@@ -6,7 +6,7 @@ Everything in SSH is one of six types laid end to end (RFC 4251 §5). Get these
 wrong and nothing above them can be right.
 
 ```ts
-import { Reader, Writer } from 'ts-ssh'
+import { Reader, Writer } from '@stacksjs/ts-ssh'
 
 const blob = new Writer().string('ssh-ed25519').string(point).done()
 
@@ -29,7 +29,7 @@ new Writer().mpint(0x80n)   // a leading zero, so it is not read back as negativ
 ## Reading keys
 
 ```ts
-import { fingerprintOf, parseAuthorizedKey, parseAuthorizedKeys, sameKey } from 'ts-ssh'
+import { fingerprintOf, parseAuthorizedKey, parseAuthorizedKeys, sameKey } from '@stacksjs/ts-ssh'
 
 const key = parseAuthorizedKey(line)
 // { type, blob, fingerprint, publicKey, bits, options, comment }
@@ -53,7 +53,7 @@ whitespace and padding matter.
 ## Packets
 
 ```ts
-import { framePacket, paddingFor, parseIdentification, takeLines, unframePacket } from 'ts-ssh'
+import { framePacket, paddingFor, parseIdentification, takeLines, unframePacket } from '@stacksjs/ts-ssh'
 ```
 
 The padding rules are arithmetic that has to be exactly right or the peer
@@ -72,7 +72,7 @@ is the bug that works on a fast connection and not on a slow one.
 ## Key exchange
 
 ```ts
-import { deriveKey, exchangeHash, negotiateAll } from 'ts-ssh'
+import { deriveKey, exchangeHash, negotiateAll } from '@stacksjs/ts-ssh'
 ```
 
 `negotiateAll` picks the **client's** first choice that the server also offers.
@@ -92,7 +92,7 @@ server first in each pair.
 ## Authentication
 
 ```ts
-import { readUserAuthRequest, verifyUserAuthSignature } from 'ts-ssh'
+import { readUserAuthRequest, verifyUserAuthSignature } from '@stacksjs/ts-ssh'
 
 const request = readUserAuthRequest(payload)
 

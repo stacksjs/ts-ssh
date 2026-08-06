@@ -1,5 +1,5 @@
 {
-  "name": "ts-ssh",
+  "name": "@stacksjs/ts-ssh",
   "type": "module",
   "version": "0.1.0",
   "description": "The SSH protocol in TypeScript: wire format, key formats, and a server that runs commands over it.",
@@ -86,5 +86,8 @@
       "autoRestage": true
     },
     "commit-msg": "bunx gitlint --edit .git/COMMIT_EDITMSG"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
