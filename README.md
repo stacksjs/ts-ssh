@@ -184,5 +184,3 @@ Made with 💙
 [npm-version-href]: https://npmjs.com/package/ts-ssh
 [github-actions-src]: https://img.shields.io/github/actions/workflow/status/stacksjs/ts-ssh/ci.yml?style=flat-square&branch=main
 [github-actions-href]: https://github.com/stacksjs/ts-ssh/actions?query=workflow%3Aci
-
-<!-- [codecov-src]: https://img.shields.io/codecov/c/gh/stacksjs/ts-ssh/main?style=flat-square
