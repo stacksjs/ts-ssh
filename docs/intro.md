@@ -36,11 +36,6 @@ Stated plainly, because a half-built SSH server is worse than none.
 client drives it in the test suite. Nothing here yet *makes* a connection,
 consults a `known_hosts` file, or signs its own userauth request.
 
-**Rekeying.** The counters that say when one is due are tracked and exposed as
-`rekeyDue`. Holding a second key exchange mid-connection is not written, so a
-connection past 2^31 packets or a gigabyte is one this would have to end rather
-than renew.
-
 **Encrypted private keys.** `bcrypt_pbkdf` would have to be hand-written, and a
 daemon's host key cannot have a passphrase anyway. The refusal names the fix.
 

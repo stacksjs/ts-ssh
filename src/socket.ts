@@ -116,6 +116,8 @@ export function serve(options: ServeOptions): Server {
           banner: options.banner,
           allow: options.allow,
           random: options.random,
+          rekeyBytes: options.rekeyBytes,
+          rekeyPackets: options.rekeyPackets,
           authenticate: options.authenticate,
         })
 
@@ -241,6 +243,24 @@ async function react(socket: ServerSocket, event: SessionEvent, options: ServeOp
  */
 function flush(socket: ServerSocket): void {
   const connection = socket.data
+
+  // A rekey is due on the schedule RFC 4253 §9 asks for. Checked here rather
+  // than when the peer sends something, because on a clone the peer sends
+  // almost nothing: it is all outbound, and a server that only noticed on
+  // inbound traffic would push a gigabyte under one key while waiting to be
+  // spoken to.
+  if (connection.session.rekeyDue && !connection.session.renegotiating)
+    enqueue(socket, connection.session.rekey(), false)
+
+  // Nothing but the key exchange may go out between a KEXINIT and its NEWKEYS,
+  // per RFC 4253 §7.1. The backlogs are exactly where the wait belongs: they
+  // already exist to hold bytes the peer cannot take yet, and this is one more
+  // reason it cannot. The next `flush` after the changeover sends them.
+  if (connection.session.renegotiating) {
+    pump(socket)
+
+    return
+  }
 
   for (const [id, outgoing] of connection.channels) {
     if (outgoing.stderr.length > 0) {

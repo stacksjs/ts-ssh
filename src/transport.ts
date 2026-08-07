@@ -63,6 +63,14 @@ export interface TransportOptions {
   software?: string
   /** Padding randomness, injectable so a test can be deterministic. */
   random?: (size: number) => Uint8Array
+  /**
+   * Override the thresholds a rekey becomes due at.
+   *
+   * Injectable for one reason: a test that had to move a gigabyte to see a
+   * rekey is a test nobody runs. The defaults are what RFC 4253 §9 asks for.
+   */
+  rekeyBytes?: number
+  rekeyPackets?: number
 }
 
 /**
@@ -88,11 +96,15 @@ export class Transport {
   peer: Identification | null = null
 
   private readonly random: (size: number) => Uint8Array
+  private readonly rekeyBytes: number
+  private readonly rekeyPackets: number
   readonly identification: string
 
   constructor(options: TransportOptions = {}) {
     this.identification = identificationString(options.software)
     this.random = options.random ?? (size => crypto.getRandomValues(new Uint8Array(size)))
+    this.rekeyBytes = options.rekeyBytes ?? REKEY_BYTES
+    this.rekeyPackets = options.rekeyPackets ?? REKEY_PACKETS
   }
 
   /** The line to send before anything else, CRLF included. */
@@ -296,10 +308,10 @@ export class Transport {
    * What this owns is the counters that say when.
    */
   get rekeyDue(): boolean {
-    return this.sendSequence >= REKEY_PACKETS
-      || this.receiveSequence >= REKEY_PACKETS
-      || this.sentBytes >= REKEY_BYTES
-      || this.receivedBytes >= REKEY_BYTES
+    return this.sendSequence >= this.rekeyPackets
+      || this.receiveSequence >= this.rekeyPackets
+      || this.sentBytes >= this.rekeyBytes
+      || this.receivedBytes >= this.rekeyBytes
   }
 }
 

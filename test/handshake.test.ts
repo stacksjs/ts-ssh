@@ -55,6 +55,10 @@ interface Behaviour {
   echo?: boolean
   /** Report which key authenticated, rather than running anything. */
   identify?: boolean
+  /** Dribble output out over time, so a rekey lands in the middle of it. */
+  stream?: { chunks: number, size: number, delayMs: number }
+  /** Lower the threshold a rekey becomes due at. */
+  rekeyBytes?: number
   /** Which client keys are allowed in. Every key, by default. */
   allows?: (blob: Uint8Array) => boolean
   allow?: readonly string[]
@@ -64,10 +68,29 @@ function server(behaviour: Behaviour): Server {
   return serve({
     hostKey: host.key,
     allow: behaviour.allow,
+    rekeyBytes: behaviour.rekeyBytes,
     authenticate: attempt => behaviour.allows?.(attempt.blob) ?? true,
     onError: error => console.error('server:', error),
 
     onCommand(command) {
+      if (behaviour.stream) {
+        const { chunks, size, delayMs } = behaviour.stream
+
+        // Deliberately not awaited. A handler that blocks holds up every
+        // inbound packet on the connection, the key exchange included - which
+        // is a hazard worth demonstrating in the one test that would notice.
+        void (async () => {
+          for (let index = 0; index < chunks; index++) {
+            command.write(new Uint8Array(size).fill(index % 251))
+            await new Promise(resolve => setTimeout(resolve, delayMs))
+          }
+
+          command.exit(0)
+        })()
+
+        return
+      }
+
       if (behaviour.identify) {
         const blob = Buffer.from(command.keyBlob).toString('base64')
         command.write(`${command.command} as ${command.user} with ${command.key.type} ${blob}\n`)
@@ -307,6 +330,62 @@ describe('a real OpenSSH client', () => {
       running.stop()
     }
   })
+
+  it('rekeys mid-transfer without dropping a byte', async () => {
+    const chunks = 16
+    const size = 64 * 1024
+    // A rekey every 100 KiB of output: ten of them across this transfer, where
+    // the real threshold is a gigabyte and no test would ever reach it.
+    const running = server({ rekeyBytes: 100 * 1024, stream: { chunks, size, delayMs: 60 } })
+
+    try {
+      const result = await ssh(running.port, 'stream', { args: ['-vv', '-o', 'LogLevel=DEBUG2'] })
+
+      expect(result.code).toBe(0)
+      expect(result.stdout.length).toBe(chunks * size)
+
+      // Each completed exchange is one of these. More than a couple means they
+      // are really happening mid-stream rather than once at the start.
+      const exchanges = result.stderr.split('SSH2_MSG_NEWKEYS received').length - 1
+      expect(exchanges).toBeGreaterThan(3)
+
+      // The regression this test exists for. OpenSSH sends the strict-kex
+      // marker only in its *first* KEXINIT, so a server that re-reads it during
+      // a rekey turns strict mode off while the client keeps it on - and then
+      // one side resets its sequence numbers at NEWKEYS and the other does not.
+      // The symptom is `message authentication code incorrect` on the first
+      // packet after the changeover, and the transfer above dying a tenth of
+      // the way through.
+      expect(result.stderr.split('resetting read seqnr').length - 1).toBe(exchanges)
+      expect(result.stderr).not.toContain('message authentication code incorrect')
+    }
+    finally {
+      running.stop()
+    }
+  }, 60_000)
+
+  it('lets the client call for the rekey', async () => {
+    // `RekeyLimit=default 1` asks the client to renegotiate every second, so
+    // the KEXINIT arrives unbidden in the middle of an established session -
+    // the case a server answers with UNIMPLEMENTED if it only knows how to
+    // exchange keys once, leaving the client stuck at 'rekeying in progress'
+    // and unable to send another byte. A clone survives that by accident. A
+    // push does not.
+    const running = server({ stream: { chunks: 12, size: 32 * 1024, delayMs: 250 } })
+
+    try {
+      const result = await ssh(running.port, 'stream', {
+        args: ['-o', 'RekeyLimit=default 1', '-vv', '-o', 'LogLevel=DEBUG2'],
+      })
+
+      expect(result.code).toBe(0)
+      expect(result.stdout.length).toBe(12 * 32 * 1024)
+      expect(result.stderr).not.toContain('message authentication code incorrect')
+    }
+    finally {
+      running.stop()
+    }
+  }, 60_000)
 
   it('survives a client that hangs up mid handshake', async () => {
     const running = server({ exec: () => ({ status: 0 }) })

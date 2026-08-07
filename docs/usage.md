@@ -299,3 +299,32 @@ handshake to push one side's counter forward, then deleting the same number of
 encrypted packets to bring it back into line - the deleted ones are never missed
 because the counter runs unbroken across the changeover. Resetting it makes the
 two halves independent.
+
+### Rekeying
+
+RFC 4253 §9 asks for new keys after an hour or a gigabyte, and `serve` does it
+without being asked: it sends a `KEXINIT` when its own counters say one is due,
+and answers the peer's when the peer gets there first. The transfer underneath
+continues - what cannot go out between a `KEXINIT` and its `NEWKEYS` waits in
+the same backlog that already holds what the peer's window will not take.
+
+This is not optional politeness. OpenSSH renegotiates on its own schedule, and a
+server that answers a second `KEXINIT` with `UNIMPLEMENTED` leaves the client
+stuck at `rekeying in progress`, unable to send another byte - because after
+sending a `KEXINIT` a peer may not send anything else until `NEWKEYS`. A clone
+survives that by accident, since the client is only receiving. A push does not.
+
+The session id does **not** change. It is the first exchange hash, and it is
+what the client's authentication signature was bound to.
+
+One trap worth naming, because it cost an afternoon and the symptom accuses the
+wrong layer. **The strict-kex markers appear only in the first `KEXINIT`.** A
+server that re-reads `kex-strict-c-v00@openssh.com` from a rekey's proposal
+concludes strict mode is off, while the client - which decided once - keeps it
+on. One side then resets its sequence numbers at `NEWKEYS` and the other does
+not, and every packet after that fails the peer's MAC. It reads exactly like a
+broken cipher.
+
+Lower the thresholds with `rekeyBytes` and `rekeyPackets` to exercise it. A test
+that had to move a gigabyte to watch a rekey happen is a test nobody runs, and
+so a test that never catches a rekey that broke.

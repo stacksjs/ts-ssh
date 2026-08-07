@@ -131,6 +131,15 @@ export interface ServerOptions {
   banner?: string
   /** Padding randomness, injectable so a test can be deterministic. */
   random?: (size: number) => Uint8Array
+  /**
+   * Override the thresholds a rekey becomes due at.
+   *
+   * The defaults are RFC 4253 §9's gigabyte and 2^31 packets. Lowering them is
+   * for tests: one that had to move a gigabyte to watch a rekey happen is one
+   * nobody runs, and so one that never catches a rekey that broke.
+   */
+  rekeyBytes?: number
+  rekeyPackets?: number
 }
 
 /**
@@ -163,6 +172,19 @@ export class ServerSession {
   private pendingKeys: { send: PacketCipher, receive: PacketCipher } | null = null
 
   private strictKex = false
+  /**
+   * Where a renegotiation has got to.
+   *
+   * `requested` means our KEXINIT has gone out and the peer's has not arrived;
+   * `exchanging` means both have. The distinction matters because the rules
+   * differ on each side of it: after sending a KEXINIT we may not send anything
+   * else until NEWKEYS, but the peer is entitled to keep sending until it sees
+   * ours - so those messages have to be handled, not refused.
+   */
+  private kexState: 'none' | 'requested' | 'exchanging' = 'none'
+  /** What to go back to once the new keys are in. */
+  private resumePhase: Phase | null = null
+
   private authAttempts = 0
   private unauthenticatedBytes = 0
   private nextChannelId = 0
@@ -188,7 +210,12 @@ export class ServerSession {
   constructor(options: ServerOptions) {
     this.options = options
     this.allow = options.allow ?? ['exec', 'env']
-    this.transport = new Transport({ software: options.software, random: options.random })
+    this.transport = new Transport({
+      software: options.software,
+      random: options.random,
+      rekeyBytes: options.rekeyBytes,
+      rekeyPackets: options.rekeyPackets,
+    })
   }
 
   /**
@@ -285,6 +312,15 @@ export class ServerSession {
       }
     }
 
+    // A renegotiation happens *inside* an established session, so ordinary
+    // channel traffic keeps arriving while it runs: the peer may send until it
+    // has seen our KEXINIT, and what is in flight when we send ours arrives
+    // afterwards. Refusing it here would kill the connection over timing.
+    if (this.phase === 'kex' && this.kexState !== 'none'
+      && message !== Message.KEXINIT && message !== Message.KEX_ECDH_INIT) {
+      return this.handleSession(message, payload, events)
+    }
+
     switch (this.phase) {
       case 'kex':
         return this.handleKex(message, payload)
@@ -307,12 +343,22 @@ export class ServerSession {
       const theirs = readKexInit(payload)
       const ours = readKexInit(this.ourKexInit!)
 
-      this.strictKex = theirs.kex.includes(STRICT_KEX_CLIENT)
+      // Decided by the *first* KEXINIT and never revisited. OpenSSH sends the
+      // marker only in its opening proposal, so re-reading it during a rekey
+      // turns strict mode off here while the peer keeps it on - and then one
+      // side resets its sequence numbers at NEWKEYS and the other does not.
+      // Every packet after that fails the peer's MAC.
+      if (this.sessionId === null)
+        this.strictKex = theirs.kex.includes(STRICT_KEX_CLIENT)
 
       // Under strict mode the KEXINIT must be the very first packet. Anything
       // before it is a packet an attacker was allowed to insert for free, and
       // the whole point is that there is no such thing.
-      if (this.strictKex && this.transport.sequences.receive !== 1)
+      //
+      // Only the *first* one: a rekey's KEXINIT arrives mid-stream by
+      // definition, and `sessionId` is what tells the two apart, being set by
+      // the exchange that follows the first.
+      if (this.strictKex && this.sessionId === null && this.transport.sequences.receive !== 1)
         throw new ProtocolError('A strict key exchange begins with KEXINIT and nothing before it')
 
       // The client's preference decides, per RFC 4253 §7.1: a server that picks
@@ -415,6 +461,60 @@ export class ServerSession {
     }
   }
 
+  /**
+   * Ask for new keys on a connection that already has some.
+   *
+   * A rekey is an ordinary key exchange run again mid-connection, and RFC 4253
+   * §9 asks for one after an hour or a gigabyte. It is not optional politeness:
+   * OpenSSH initiates one on its own schedule, and a server that answers a
+   * second `KEXINIT` with `UNIMPLEMENTED` leaves the client stuck at "rekeying
+   * in progress" - unable to send another byte, because after sending a KEXINIT
+   * a peer may not send anything else until NEWKEYS. A clone survives that by
+   * accident, since the client is only receiving. A push does not.
+   *
+   * The session id does **not** change. It is the *first* exchange hash and it
+   * is what the client's authentication signature was bound to, so replacing it
+   * would invalidate the login that already happened.
+   *
+   * Returns the KEXINIT to send, or nothing when one is already in flight.
+   */
+  rekey(): Uint8Array {
+    if (this.kexState !== 'none' || this.phase !== 'session')
+      return new Uint8Array(0)
+
+    this.ourKexInit = writeKexInit(ALGORITHMS)
+    this.kexState = 'requested'
+
+    // The phase stays `session` until the peer's KEXINIT arrives. We have
+    // stopped sending, but it has not yet been told to.
+    return this.transport.send(this.ourKexInit)
+  }
+
+  /** Whether a renegotiation is under way, and outbound data must wait. */
+  get renegotiating(): boolean {
+    return this.kexState !== 'none'
+  }
+
+  /**
+   * A KEXINIT arrived on an established session.
+   *
+   * Either the peer started this, or it is answering the one `rekey` sent. The
+   * two differ only in whether we still owe it a KEXINIT of our own.
+   */
+  private beginRekey(payload: Uint8Array): Uint8Array | null {
+    const ours = this.kexState === 'requested'
+      ? new Uint8Array(0)
+      : this.transport.send(this.ourKexInit = writeKexInit(ALGORITHMS))
+
+    this.kexState = 'exchanging'
+    this.resumePhase = 'session'
+    this.phase = 'kex'
+
+    const negotiated = this.handleKex(Message.KEXINIT, payload)
+
+    return concat([ours, negotiated ?? new Uint8Array(0)])
+  }
+
   private handleNewKeys(message: number): Uint8Array | null {
     if (message !== Message.NEWKEYS)
       throw new ProtocolError(`Expected NEWKEYS and got message ${message}`)
@@ -425,7 +525,9 @@ export class ServerSession {
       this.transport.resetReceiveSequence()
 
     this.pendingKeys = null
-    this.phase = 'service'
+    this.phase = this.resumePhase ?? 'service'
+    this.resumePhase = null
+    this.kexState = 'none'
 
     return null
   }
@@ -534,6 +636,9 @@ export class ServerSession {
 
   private handleSession(message: number, payload: Uint8Array, events: SessionEvent[]): Uint8Array | null {
     switch (message) {
+      case Message.KEXINIT:
+        return this.beginRekey(payload)
+
       case Message.CHANNEL_OPEN:
         return this.openChannel(payload, events)
 

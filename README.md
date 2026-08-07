@@ -198,6 +198,7 @@ says so - pass `allow` to change that.
 - **The handshake** - version exchange to running command, with each step refused until the one before it has happened
 - **Strict key exchange** - `kex-strict-*-v00@openssh.com`, which closes Terrapin (CVE-2023-48795)
 - **A server on a socket** - both backlogs handled: the peer's channel window and a socket that is full
+- **Rekeying** - initiated on RFC 4253 §9's schedule and answered when the peer asks, without dropping a byte of the transfer it interrupts
 
 ## What is not implemented yet
 
@@ -207,9 +208,6 @@ Being plain about it, because a half-built SSH server is worse than none:
   *makes* a connection, checks a `known_hosts` file, or signs its own userauth
   request. The pieces are all present and unassembled, which is where the server
   was a commit ago.
-- **Rekeying.** The counters that say when one is due are tracked and exposed as
-  `rekeyDue`; holding a second key exchange mid-connection is not written. At
-  2^31 packets or a gigabyte, whichever comes first.
 - **Encrypted private keys.** `bcrypt_pbkdf` is Blowfish with a modified key
   schedule and would have to be hand-written. A daemon's host key cannot have a
   passphrase anyway, so the refusal names the fix instead.
