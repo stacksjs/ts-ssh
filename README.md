@@ -152,6 +152,38 @@ The window is what paces a transfer. `chunk` returns what fits and hands back
 the rest rather than throwing - a large write is normal, and overshooting is how
 a transfer stalls forever with both sides waiting.
 
+### A server
+
+```ts
+import { generateHostKey, serve } from '@stacksjs/ts-ssh'
+
+const host = generateHostKey('my-forge')
+
+serve({
+  port: 2222,
+  hostKey: host.key,
+  authenticate: async ({ user, blob }) => isKnownKey(user, blob),
+
+  onCommand(command) {
+    command.write(`you asked for: ${command.command}\n`)
+    command.exit(0)
+  },
+})
+```
+
+That is a working SSH server. `ssh -p 2222 anyone@localhost 'hello'` prints the
+line and exits zero, and the test suite proves it with the real OpenSSH client
+rather than with a second implementation of this one.
+
+`authenticate` is called only after the signature has been checked, so the
+question it answers is genuinely "may this key in" rather than "is this key
+real". `write` queues rather than sends: the bytes go out as the peer's window
+allows and as the socket accepts them, in order, and `exit` waits for them.
+
+Shell and pty requests are refused by default. A forge runs `git-upload-pack`
+for people who have no account on the machine, and `CHANNEL_FAILURE` is how it
+says so - pass `allow` to change that.
+
 ## What is implemented
 
 - **Wire format** - every type in RFC 4251 §5, read and written, bounds-checked
@@ -162,15 +194,25 @@ a transfer stalls forever with both sides waiting.
 - **Key exchange** - algorithm negotiation, the exchange hash, and the six derived keys of RFC 4253 §7.2
 - **Public key authentication** - the signed blob of RFC 4252 §7, and ed25519 verification
 - **Channels** - opens, requests including `exec`, data and stderr, exit status, and the window accounting
+- **Host keys** - the `openssh-key-v1` container read and written, checked against `ssh-keygen` in both directions
+- **The handshake** - version exchange to running command, with each step refused until the one before it has happened
+- **Strict key exchange** - `kex-strict-*-v00@openssh.com`, which closes Terrapin (CVE-2023-48795)
+- **A server on a socket** - both backlogs handled: the peer's channel window and a socket that is full
 
 ## What is not implemented yet
 
 Being plain about it, because a half-built SSH server is worse than none:
 
-- **The handshake driven end to end.** Every piece it needs is here - negotiate,
-  exchange, derive, encrypt, authenticate, open a channel - but nothing yet
-  sequences them against a socket and a host key. That is the remaining step
-  between this and `ssh host command`.
+- **The client side.** The server handshake is complete; nothing here yet
+  *makes* a connection, checks a `known_hosts` file, or signs its own userauth
+  request. The pieces are all present and unassembled, which is where the server
+  was a commit ago.
+- **Rekeying.** The counters that say when one is due are tracked and exposed as
+  `rekeyDue`; holding a second key exchange mid-connection is not written. At
+  2^31 packets or a gigabyte, whichever comes first.
+- **Encrypted private keys.** `bcrypt_pbkdf` is Blowfish with a modified key
+  schedule and would have to be hand-written. A daemon's host key cannot have a
+  passphrase anyway, so the refusal names the fix instead.
 - **`chacha20-poly1305@openssh.com`**, and deliberately. It needs raw ChaCha20
   and a bare Poly1305 over the ciphertext - not the RFC 8439 AEAD construction,
   which appends length blocks this does not. Bun's crypto exposes neither, so

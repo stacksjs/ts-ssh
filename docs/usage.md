@@ -194,3 +194,108 @@ accept at once. It returns what fits and hands back the rest.
 again. That happens at half: an adjustment per packet would double the message
 count of every transfer, and waiting until the window is empty stalls the
 sender for a round trip.
+
+## Host keys
+
+A server needs a key that says which host it is, and one that changes between
+restarts makes every client that ever connected print the warning about a
+changed fingerprint - which is the warning that is supposed to mean something.
+
+```ts
+import { generateHostKey, parsePrivateKey } from '@stacksjs/ts-ssh'
+
+const generated = generateHostKey('my-forge')
+await Bun.write('host_key', generated.openssh)
+
+const key = parsePrivateKey(await Bun.file('host_key').text())
+key.fingerprint // SHA256:…
+```
+
+The container is `openssh-key-v1`, the one `ssh-keygen` writes today, and it is
+read and written here rather than approximated: `ssh-keygen -y` accepts what
+this produces, and this accepts what `ssh-keygen` produces. A generator that
+only its own parser accepts has invented a private format.
+
+The seed is checked against the point it claims to derive. A file can write the
+same wrong public key in all three places it appears and be perfectly
+self-consistent; deriving it is the only check that catches that, and the
+symptom of missing it is a server that signs with one key while advertising
+another.
+
+Keys with a passphrase are refused. Unwrapping one needs `bcrypt_pbkdf`, and a
+daemon has nobody at the keyboard when it starts, so the error names the fix:
+`ssh-keygen -p -N "" -f <file>`.
+
+## The handshake
+
+`serve` is the whole thing on a port.
+
+```ts
+import { generateHostKey, serve } from '@stacksjs/ts-ssh'
+
+serve({
+  port: 2222,
+  hostKey: generateHostKey().key,
+  authenticate: ({ user, blob }) => isKnownKey(user, blob),
+
+  onCommand(command) {
+    const child = Bun.spawn(['git-upload-pack', pathFor(command.command)], {
+      stdin: 'pipe',
+      stdout: 'pipe',
+    })
+
+    command.onData(data => child.stdin.write(data))
+    command.onEnd(() => child.stdin.end())
+
+    for await (const chunk of child.stdout)
+      command.write(chunk)
+
+    command.exit(await child.exited)
+  },
+})
+```
+
+`authenticate` runs only after the signature has been checked, so it answers
+"may this key in" rather than "is this key real". Returning false produces the
+same failure every time, whatever the reason: telling a client whether a user
+exists, or whether a key is known but unauthorised, turns a login prompt into a
+directory.
+
+`write` queues. The bytes leave as the peer's channel window allows and as the
+socket accepts them, and `exit` waits for the queue to drain - a close that
+overtakes the output it follows truncates it.
+
+Shell and pty requests are refused by default, which is what a forge wants: it
+runs git for people with no account on the machine. Pass `allow` to change it.
+
+### Driving it yourself
+
+`ServerSession` is the same state machine without the socket, for a caller that
+has its own transport or wants to assert on the sequence.
+
+```ts
+import { ServerSession } from '@stacksjs/ts-ssh'
+
+const session = new ServerSession({ hostKey, authenticate })
+socket.write(session.start())
+
+const { send, events, closed } = await session.receive(chunk)
+```
+
+The order is the security property. A `USERAUTH_REQUEST` before `NEWKEYS` is a
+request to send a signature in the clear; a `CHANNEL_OPEN` before authentication
+is a request to run a command as nobody. Both are refused rather than handled,
+because an implementation that is merely *usually* in the right state is one
+where the peer chooses the state.
+
+### Strict key exchange
+
+On when both sides announce `kex-strict-*-v00@openssh.com`, which every current
+OpenSSH does. It resets the sequence numbers at `NEWKEYS` and refuses the
+messages that exist to be ignored.
+
+Terrapin (CVE-2023-48795) works by injecting packets into the unencrypted
+handshake to push one side's counter forward, then deleting the same number of
+encrypted packets to bring it back into line - the deleted ones are never missed
+because the counter runs unbroken across the changeover. Resetting it makes the
+two halves independent.

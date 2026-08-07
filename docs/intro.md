@@ -25,14 +25,24 @@ very little about a protocol.
 - **[Channels](/usage#channels)** - `Channel`, `readChannelRequest`, `writeExitStatus`
 - **[Key exchange](/usage#key-exchange)** - `negotiateAll`, `exchangeHash`, `deriveKey`
 - **[Authentication](/usage#authentication)** - `readUserAuthRequest`, `verifyUserAuthSignature`
+- **[Host keys](/usage#host-keys)** - `generateHostKey`, `parsePrivateKey`
+- **[The handshake](/usage#the-handshake)** - `ServerSession`, `serve`
 
 ## What is not here yet
 
-A half-built SSH server is worse than none, so this is stated plainly: nothing
-here sequences the handshake against a socket and a host key. Every piece it
-needs exists - negotiate, exchange, derive, encrypt, authenticate, open a
-channel - but the driver that puts them in order is the remaining step between
-this and `ssh host command`.
+Stated plainly, because a half-built SSH server is worse than none.
+
+**The client side.** The server handshake is complete and the real OpenSSH
+client drives it in the test suite. Nothing here yet *makes* a connection,
+consults a `known_hosts` file, or signs its own userauth request.
+
+**Rekeying.** The counters that say when one is due are tracked and exposed as
+`rekeyDue`. Holding a second key exchange mid-connection is not written, so a
+connection past 2^31 packets or a gigabyte is one this would have to end rather
+than renew.
+
+**Encrypted private keys.** `bcrypt_pbkdf` would have to be hand-written, and a
+daemon's host key cannot have a passphrase anyway. The refusal names the fix.
 
 `chacha20-poly1305@openssh.com` is deliberately absent rather than pending. It
 needs raw ChaCha20 and a bare Poly1305 over the ciphertext, neither of which
