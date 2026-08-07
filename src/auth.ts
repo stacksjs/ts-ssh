@@ -31,7 +31,7 @@
 
 import { verify as verifySignature } from 'node:crypto'
 import { ProtocolError, Reader, Writer } from './buffer'
-import { parsePublicKey } from './keys'
+import { ed25519KeyObject, parsePublicKey } from './keys'
 
 export interface UserAuthRequest {
   user: string
@@ -115,31 +115,6 @@ export function parseSignature(blob: Uint8Array): { algorithm: string, signature
   catch {
     return null
   }
-}
-
-/**
- * An ed25519 public key, in the shape node's crypto wants.
- *
- * SSH carries the raw 32-byte point; `crypto.verify` wants a key object. The
- * DER prefix below is the SubjectPublicKeyInfo header for ed25519 and never
- * varies, so wrapping is a concatenation rather than an encoder.
- */
-function ed25519KeyObject(point: Uint8Array): import('node:crypto').KeyObject {
-  const prefix = new Uint8Array([
-    0x30, 0x2A, // SEQUENCE, 42 bytes
-    0x30, 0x05, // SEQUENCE, 5 bytes
-    0x06, 0x03, 0x2B, 0x65, 0x70, // OID 1.3.101.112, id-Ed25519
-    0x03, 0x21, 0x00, // BIT STRING, 33 bytes, 0 unused bits
-  ])
-
-  const der = new Uint8Array(prefix.length + point.length)
-  der.set(prefix)
-  der.set(point, prefix.length)
-
-  // Imported through the WebCrypto-shaped path node exposes for raw DER.
-  const { createPublicKey } = require('node:crypto') as typeof import('node:crypto')
-
-  return createPublicKey({ key: Buffer.from(der), format: 'der', type: 'spki' })
 }
 
 export interface VerifyResult {

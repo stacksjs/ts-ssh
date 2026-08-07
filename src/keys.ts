@@ -18,7 +18,9 @@
  * loosely into the wrong type is a key that authenticates the wrong person.
  */
 
-import { Reader, Writer } from './buffer'
+import type { KeyObject } from 'node:crypto'
+import { createPublicKey } from 'node:crypto'
+import { ProtocolError, Reader, Writer } from './buffer'
 
 /** The key types this understands, in the order a server should prefer them. */
 export const KEY_TYPES = [
@@ -234,6 +236,34 @@ export function ed25519Blob(point: Uint8Array): Uint8Array {
     throw new Error('An ed25519 public key is 32 bytes')
 
   return new Writer().string('ssh-ed25519').string(point).done()
+}
+
+/**
+ * The DER header for an ed25519 SubjectPublicKeyInfo.
+ *
+ * SSH carries the raw 32-byte point and node's crypto wants a key object, so
+ * the two are bridged by a prefix that never varies for this one algorithm.
+ * Written out rather than encoded because there is exactly one of them, and
+ * kept here rather than beside each caller because two copies of a constant is
+ * one copy too many.
+ */
+const SPKI_ED25519 = new Uint8Array([
+  0x30, 0x2A, // SEQUENCE, 42 bytes
+  0x30, 0x05, // SEQUENCE, 5 bytes
+  0x06, 0x03, 0x2B, 0x65, 0x70, // OID 1.3.101.112, id-Ed25519
+  0x03, 0x21, 0x00, // BIT STRING, 33 bytes, 0 unused bits
+])
+
+/** An ed25519 point, in the shape node's crypto wants for verification. */
+export function ed25519KeyObject(point: Uint8Array): KeyObject {
+  if (point.length !== 32)
+    throw new ProtocolError('An ed25519 public key is 32 bytes')
+
+  const der = new Uint8Array(SPKI_ED25519.length + point.length)
+  der.set(SPKI_ED25519)
+  der.set(point, SPKI_ED25519.length)
+
+  return createPublicKey({ key: Buffer.from(der), format: 'der', type: 'spki' })
 }
 
 /**
