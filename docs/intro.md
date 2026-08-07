@@ -21,14 +21,18 @@ very little about a protocol.
 - **[Public keys](/usage#reading-keys)** - `parseAuthorizedKey`, `fingerprintOf`, `sameKey`
 - **[Packets](/usage#packets)** - `framePacket`, `paddingFor`, `parseIdentification`
 - **[Ciphers](/usage#ciphers)** - `createPacketCipher`, `keyLengthsFor`
+- **[Transport](/usage#transport)** - `Transport`
+- **[Channels](/usage#channels)** - `Channel`, `readChannelRequest`, `writeExitStatus`
 - **[Key exchange](/usage#key-exchange)** - `negotiateAll`, `exchangeHash`, `deriveKey`
 - **[Authentication](/usage#authentication)** - `readUserAuthRequest`, `verifyUserAuthSignature`
 
 ## What is not here yet
 
-A half-built SSH server is worse than none, so this is stated plainly: the
-connection layer - channels, `exec`, window accounting - is not written. That is
-the remaining piece between here and running a command over SSH.
+A half-built SSH server is worse than none, so this is stated plainly: nothing
+here sequences the handshake against a socket and a host key. Every piece it
+needs exists - negotiate, exchange, derive, encrypt, authenticate, open a
+channel - but the driver that puts them in order is the remaining step between
+this and `ssh host command`.
 
 `chacha20-poly1305@openssh.com` is deliberately absent rather than pending. It
 needs raw ChaCha20 and a bare Poly1305 over the ciphertext, neither of which

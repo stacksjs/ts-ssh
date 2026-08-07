@@ -137,21 +137,40 @@ encrypt-then-MAC variants: the older encrypt-and-MAC form requires decrypting a
 block to learn the length *before* anything has been authenticated, which means
 acting on bytes an attacker chose.
 
+### Channels
+
+```ts
+import { Channel, readChannelRequest, writeExitStatus } from '@stacksjs/ts-ssh'
+
+const channel = new Channel({ localId, remoteId, remoteWindow, remoteMaxPacket })
+
+const { packets, remaining } = channel.chunk(output)
+// send `packets`; keep `remaining` until the peer opens the window
+```
+
+The window is what paces a transfer. `chunk` returns what fits and hands back
+the rest rather than throwing - a large write is normal, and overshooting is how
+a transfer stalls forever with both sides waiting.
+
 ## What is implemented
 
 - **Wire format** - every type in RFC 4251 §5, read and written, bounds-checked
 - **Public keys** - `authorized_keys` lines, wire blobs, fingerprints; ed25519, RSA and ECDSA read, unknown types carried without pretending to understand them
 - **Packet protocol** - framing, the padding arithmetic, the version exchange and its line buffering
 - **Ciphers** - AES-GCM and AES-CTR with encrypt-then-MAC, with the offer derived from what is implemented
+- **Transport** - a byte stream buffered into packets, the sequence numbers both MACs depend on, and the changeover to encryption
 - **Key exchange** - algorithm negotiation, the exchange hash, and the six derived keys of RFC 4253 §7.2
 - **Public key authentication** - the signed blob of RFC 4252 §7, and ed25519 verification
+- **Channels** - opens, requests including `exec`, data and stderr, exit status, and the window accounting
 
 ## What is not implemented yet
 
 Being plain about it, because a half-built SSH server is worse than none:
 
-- **The connection layer.** Channels, `exec`, and the window accounting. This is
-  the remaining piece between here and running a command over SSH.
+- **The handshake driven end to end.** Every piece it needs is here - negotiate,
+  exchange, derive, encrypt, authenticate, open a channel - but nothing yet
+  sequences them against a socket and a host key. That is the remaining step
+  between this and `ssh host command`.
 - **`chacha20-poly1305@openssh.com`**, and deliberately. It needs raw ChaCha20
   and a bare Poly1305 over the ciphertext - not the RFC 8439 AEAD construction,
   which appends length blocks this does not. Bun's crypto exposes neither, so

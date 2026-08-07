@@ -144,3 +144,53 @@ The session identifier is the first field signed. A signature captured from one
 connection cannot be replayed into another, under a different user, or against a
 different service - and the test suite checks each of those refusals rather than
 trusting the argument.
+
+## Transport
+
+TCP delivers whatever it feels like: a packet in three reads, two packets in
+one, the version exchange split down the middle of a line.
+
+```ts
+import { Transport } from '@stacksjs/ts-ssh'
+
+const transport = new Transport({ software: 'my-forge' })
+socket.write(transport.greeting())
+
+for (const payload of transport.receive(chunk))
+  handle(payload)
+
+socket.write(transport.send(reply))
+```
+
+`receive` returns the payloads that completed and keeps the rest buffered. A
+caller that ignores the remainder is the bug this exists to prevent.
+
+The sequence numbers count every packet from the first, including the ones sent
+in the clear, and **do not reset** when encryption begins. They are what the MAC
+covers, so a receiver that miscounts rejects everything from that point on.
+
+`useSendCipher` and `useReceiveCipher` are the changeover, per direction, at the
+packet where `NEWKEYS` says so.
+
+## Channels
+
+One connection carries many independent streams, each with its own window.
+
+```ts
+import { Channel, readChannelRequest, writeExitStatus } from '@stacksjs/ts-ssh'
+
+const request = readChannelRequest(payload)
+if (request.request === 'exec')
+  run(request.command)
+
+const { packets, remaining } = channel.chunk(output)
+```
+
+`chunk` is bounded by two things at once: the window, which is how much the peer
+will accept in total, and the maximum packet size, which is how much it will
+accept at once. It returns what fits and hands back the rest.
+
+`consume` accounts for data that arrived and says when to open the window
+again. That happens at half: an adjustment per packet would double the message
+count of every transfer, and waiting until the window is empty stalls the
+sender for a round trip.
