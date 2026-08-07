@@ -13,6 +13,7 @@
 
 export * from './auth'
 export * from './buffer'
+export * from './channel'
 export * from './cipher'
 export * from './kex'
 export * from './keys'
