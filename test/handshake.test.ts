@@ -53,6 +53,8 @@ interface Behaviour {
   exec?: (command: string) => { stdout?: Uint8Array, stderr?: Uint8Array, status?: number }
   /** Echo stdin back instead of answering immediately. */
   echo?: boolean
+  /** Report which key authenticated, rather than running anything. */
+  identify?: boolean
   /** Which client keys are allowed in. Every key, by default. */
   allows?: (blob: Uint8Array) => boolean
   allow?: readonly string[]
@@ -66,6 +68,14 @@ function server(behaviour: Behaviour): Server {
     onError: error => console.error('server:', error),
 
     onCommand(command) {
+      if (behaviour.identify) {
+        const blob = Buffer.from(command.keyBlob).toString('base64')
+        command.write(`${command.command} as ${command.user} with ${command.key.type} ${blob}\n`)
+        command.exit(0)
+
+        return
+      }
+
       if (behaviour.echo) {
         const chunks: Uint8Array[] = []
         command.onData(data => chunks.push(data))
@@ -275,6 +285,23 @@ describe('a real OpenSSH client', () => {
       // it changed its own behaviour because of what we sent.
       expect(result.stderr).toContain('resetting send seqnr')
       expect(result.stderr).toContain('resetting read seqnr')
+    }
+    finally {
+      running.stop()
+    }
+  })
+
+  it('tells the command which key authenticated', async () => {
+    const running = server({ identify: true })
+
+    try {
+      const result = await ssh(running.port, 'whoami')
+
+      expect(result.code).toBe(0)
+      // The name is what the client typed; the key is what it had to prove. A
+      // forge where everybody connects as `git@` has only the second to go on.
+      expect(result.text).toContain('whoami as someone with ssh-ed25519 ')
+      expect(result.text.trim()).toEndWith(Buffer.from(client.key.publicKey).toString('base64'))
     }
     finally {
       running.stop()

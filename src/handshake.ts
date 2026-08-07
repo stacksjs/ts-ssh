@@ -173,6 +173,17 @@ export class ServerSession {
   sessionId: Uint8Array | null = null
   /** Who the client proved it was. Null until it has. */
   user: string | null = null
+  /**
+   * The key it proved it with, and the blob exactly as it arrived.
+   *
+   * The name is what the client typed and the key is what it had to prove, so
+   * anything deciding what this connection may do wants the second. Kept here
+   * rather than only passed to `authenticate`, because the decision that needs
+   * it - what a command may touch - happens later, once a repository has been
+   * named.
+   */
+  key: PublicKey | null = null
+  keyBlob: Uint8Array | null = null
 
   constructor(options: ServerOptions) {
     this.options = options
@@ -483,6 +494,8 @@ export class ServerSession {
       return this.fail(request.user, 'That key is not one this account may use', events)
 
     this.user = request.user
+    this.key = key
+    this.keyBlob = request.publicKey
     this.phase = 'session'
     events.push({ type: 'authenticated', user: request.user, key })
 

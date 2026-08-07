@@ -24,13 +24,23 @@
 
 import type { Socket } from 'bun'
 import type { Channel } from './channel'
+import type { PublicKey } from './keys'
 import type { ServerOptions, SessionEvent } from './handshake'
 import { ServerSession } from './handshake'
 
 /** One command a client asked to run. */
 export interface Command {
-  /** Who the client proved it was. */
+  /** The name the client connected as. Chosen by the client, so rarely useful. */
   user: string
+  /**
+   * The key the client proved it holds, and the blob as it arrived.
+   *
+   * This is the identity. A forge where everybody connects as `git@` has
+   * nothing else to go on, and matching the blob byte for byte against a stored
+   * one is the whole authorisation decision.
+   */
+  key: PublicKey
+  keyBlob: Uint8Array
   /** The command line, exactly as sent. Unparsed: it is the client's string. */
   command: string
   /** Stdin, as it arrives. */
@@ -166,6 +176,8 @@ async function react(socket: ServerSocket, event: SessionEvent, options: ServeOp
 
       const command: Command = {
         user: connection.session.user ?? '',
+        key: connection.session.key!,
+        keyBlob: connection.session.keyBlob ?? new Uint8Array(0),
         command: event.command,
         onData: handler => void (outgoing.onData = handler),
         onEnd: handler => void (outgoing.onEnd = handler),
