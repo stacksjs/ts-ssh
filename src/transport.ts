@@ -100,53 +100,42 @@ export class Transport {
     return new TextEncoder().encode(`${this.identification}\r\n`)
   }
 
+  /** Buffer bytes without interpreting any of them. */
+  push(chunk: Bytes): void {
+    this.incoming = concat(this.incoming, chunk)
+  }
+
   /**
-   * Feed bytes in. Returns the payloads that completed.
+   * The next complete payload, or null when one has not all arrived.
    *
-   * Everything that did not complete stays buffered. A caller that ignores the
-   * remainder is the bug this exists to prevent.
+   * **Taking packets one at a time is what makes the key changeover possible.**
+   * `NEWKEYS` is sent in the clear and every packet after it is encrypted, and
+   * a peer is entitled to put both in the same TCP segment. A reader that
+   * drains its whole buffer in one pass would reach the encrypted packet before
+   * anything had a chance to install the cipher, and would try to unframe it as
+   * plaintext. That works on a connection where the two arrive separately,
+   * which is most of them, and fails on the one where they do not.
+   */
+  next(): Bytes | null {
+    if (!this.peer && !this.takeIdentification())
+      return null
+
+    return this.takePacket()
+  }
+
+  /**
+   * Feed bytes in. Returns every payload that completed.
+   *
+   * The convenience form, for a caller with no changeover to make in the middle
+   * - a test, or a reader that only parses. Anything driving a real connection
+   * wants `push` and `next`.
    */
   receive(chunk: Bytes): Uint8Array[] {
-    this.incoming = concat(this.incoming, chunk)
+    this.push(chunk)
     const payloads: Uint8Array[] = []
 
-    // The version exchange comes first and is line-oriented. A server may send
-    // any number of other lines before its identification, and a client must
-    // ignore them until one starts `SSH-`.
-    if (!this.peer) {
-      const { lines, rest } = takeLines(this.incoming)
-
-      for (const line of lines) {
-        const identification = parseIdentification(line)
-        if (identification) {
-          this.peer = identification
-          break
-        }
-
-        // Not an identification and not ours to interpret. A banner line.
-        if (line.startsWith('SSH-')) {
-          throw new ProtocolError(`The peer speaks a version this does not: ${line}`)
-        }
-      }
-
-      if (!this.peer) {
-        this.incoming = rest
-
-        return payloads
-      }
-
-      // Everything after the identification line is packets. `takeLines` gave
-      // back the remainder after the *last* line, which is wrong here: the
-      // bytes after the identification may include a packet that contains a
-      // newline. Find the line's end and take from there.
-      const marker = new TextEncoder().encode(`${this.peer.raw}\n`)
-      const at = indexOf(this.incoming, marker)
-      this.incoming = at === -1 ? rest : this.incoming.subarray(at + marker.length)
-    }
-
-    // Then packets, as many as have arrived whole.
     for (;;) {
-      const packet = this.takePacket()
+      const packet = this.next()
       if (!packet)
         break
 
@@ -154,6 +143,46 @@ export class Transport {
     }
 
     return payloads
+  }
+
+  /**
+   * Read the peer's identification line out of the buffer.
+   *
+   * The version exchange is line-oriented and comes before any packet. A server
+   * may send any number of other lines first, and a client must ignore them
+   * until one starts `SSH-`.
+   */
+  private takeIdentification(): boolean {
+    const { lines, rest } = takeLines(this.incoming)
+
+    for (const line of lines) {
+      const identification = parseIdentification(line)
+      if (identification) {
+        this.peer = identification
+        break
+      }
+
+      // Starts `SSH-` and did not parse: a version this does not speak, rather
+      // than a banner line to skip past.
+      if (line.startsWith('SSH-'))
+        throw new ProtocolError(`The peer speaks a version this does not: ${line}`)
+    }
+
+    if (!this.peer) {
+      this.incoming = rest
+
+      return false
+    }
+
+    // Everything after the identification line is packets. `takeLines` gave
+    // back the remainder after the *last* line, which is wrong here: the bytes
+    // after the identification may include a packet that contains a newline.
+    // Find the line's end and take from there.
+    const marker = new TextEncoder().encode(`${this.peer.raw}\n`)
+    const at = indexOf(this.incoming, marker)
+    this.incoming = at === -1 ? rest : this.incoming.subarray(at + marker.length)
+
+    return true
   }
 
   /** One whole packet from the buffer, or null when it has not all arrived. */
@@ -220,6 +249,28 @@ export class Transport {
   useReceiveCipher(cipher: PacketCipher): void {
     this.receiveCipher = cipher
     this.receivedBytes = 0
+  }
+
+  /**
+   * Start the sequence numbers again from zero.
+   *
+   * Only under strict key exchange (`kex-strict-*-v00@openssh.com`), and only
+   * at `NEWKEYS`. Ordinarily the counters run for the life of the connection,
+   * and that continuity is what Terrapin (CVE-2023-48795) turns against the
+   * protocol: an attacker injects packets into the unencrypted handshake to
+   * push one side's counter forward, then deletes the same number of encrypted
+   * packets to bring it back into line, and the deleted ones are never missed.
+   * Resetting at the changeover makes the two halves independent, so a packet
+   * removed after it cannot be paid for by one added before.
+   *
+   * Per direction, because each side resets its own at its own `NEWKEYS`.
+   */
+  resetSendSequence(): void {
+    this.sendSequence = 0
+  }
+
+  resetReceiveSequence(): void {
+    this.receiveSequence = 0
   }
 
   /** Whether both directions are encrypted. */

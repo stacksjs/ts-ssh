@@ -170,6 +170,54 @@ function randomBytes(size: number): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(size))
 }
 
+/**
+ * The messages with no fields worth a module of their own.
+ *
+ * `NEWKEYS` is the interesting one: it is a single byte and it is the last
+ * packet sent under the old keys, so a sender installs its new cipher *after*
+ * producing this and not before.
+ */
+export function writeNewKeys(): Uint8Array {
+  return new Uint8Array([Message.NEWKEYS])
+}
+
+export function writeServiceRequest(service: string): Uint8Array {
+  return new Writer().byte(Message.SERVICE_REQUEST).string(service).done()
+}
+
+export function writeServiceAccept(service: string): Uint8Array {
+  return new Writer().byte(Message.SERVICE_ACCEPT).string(service).done()
+}
+
+/**
+ * `UNIMPLEMENTED`, naming the packet that was not understood.
+ *
+ * By sequence number, which is why the answer has to be produced while that
+ * number is still known. A peer uses it to fail one request rather than the
+ * connection, so answering is friendlier than disconnecting - and quieter than
+ * ignoring, which leaves the peer waiting.
+ */
+export function writeUnimplemented(sequence: number): Uint8Array {
+  return new Writer().byte(Message.UNIMPLEMENTED).uint32(sequence >>> 0).done()
+}
+
+/**
+ * `DISCONNECT`, which is a courtesy rather than a mechanism.
+ *
+ * The connection ends when the socket closes; this says why first, so the other
+ * end can print something better than "connection reset by peer". Send it, then
+ * close - a peer is not obliged to answer and there is nothing to wait for.
+ */
+export function writeDisconnect(reason: number, description: string): Uint8Array {
+  return new Writer()
+    .byte(Message.DISCONNECT)
+    .uint32(reason)
+    .string(description)
+    // The language tag. Empty, which is what everybody sends.
+    .string('')
+    .done()
+}
+
 /** What a peer said it was, before any packet was sent. */
 export interface Identification {
   /** The whole line without CRLF: what the exchange hash is computed over. */
