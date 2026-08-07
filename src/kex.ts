@@ -32,6 +32,31 @@
 
 import { ProtocolError, Reader, Writer } from './buffer'
 
+/** One side's lists, in preference order. */
+export interface AlgorithmOffer {
+  kex: readonly string[]
+  hostKey: readonly string[]
+  cipher: readonly string[]
+  mac: readonly string[]
+  compression: readonly string[]
+}
+
+/**
+ * The two markers that turn on strict key exchange.
+ *
+ * Not algorithms - neither side can select them, and they never match each
+ * other because one ends `-c-` and the other `-s-`. They are announcements,
+ * placed in the kex list because it is the one list both sides already read
+ * before anything is agreed. Strict mode is on only when both appear, which is
+ * what makes it safe to add to an existing implementation.
+ *
+ * What it buys: sequence numbers restart at `NEWKEYS` and the handshake refuses
+ * the messages that exist to be ignored, which together close Terrapin
+ * (CVE-2023-48795). See `Transport.resetSendSequence`.
+ */
+export const STRICT_KEX_CLIENT: string = 'kex-strict-c-v00@openssh.com'
+export const STRICT_KEX_SERVER: string = 'kex-strict-s-v00@openssh.com'
+
 /**
  * What this offers, in preference order.
  *
@@ -46,8 +71,8 @@ import { ProtocolError, Reader, Writer } from './buffer'
  * worth the difference here, and GCM over CTR because one construction is
  * harder to get wrong than a cipher and a MAC that have to agree.
  */
-export const ALGORITHMS = {
-  kex: ['curve25519-sha256', 'curve25519-sha256@libssh.org'],
+export const ALGORITHMS: AlgorithmOffer = {
+  kex: ['curve25519-sha256', 'curve25519-sha256@libssh.org', STRICT_KEX_SERVER],
   hostKey: ['ssh-ed25519'],
   cipher: [
     'aes256-gcm@openssh.com',
@@ -59,7 +84,7 @@ export const ALGORITHMS = {
   // one. A cipher that authenticates its own data answers `<implicit>` here.
   mac: ['hmac-sha2-256-etm@openssh.com', 'hmac-sha2-512-etm@openssh.com'],
   compression: ['none'],
-} as const
+}
 
 export interface KexInit {
   cookie: Uint8Array
@@ -77,14 +102,7 @@ export interface KexInit {
 }
 
 /** Build a KEXINIT payload, message number included. */
-export function writeKexInit(offer: {
-  kex: readonly string[]
-  hostKey: readonly string[]
-  cipher: readonly string[]
-  mac: readonly string[]
-  compression: readonly string[]
-  cookie?: Uint8Array
-}): Uint8Array {
+export function writeKexInit(offer: AlgorithmOffer & { cookie?: Uint8Array }): Uint8Array {
   const cookie = offer.cookie ?? crypto.getRandomValues(new Uint8Array(16))
   if (cookie.length !== 16)
     throw new ProtocolError('A KEXINIT cookie is 16 bytes')
@@ -180,7 +198,12 @@ export interface Negotiated {
 
 /** Negotiate every category, or say which one failed. */
 export function negotiateAll(client: KexInit, server: KexInit): Negotiated | { failed: string } {
-  const kex = negotiate(client.kex, server.kex)
+  // The strict-kex markers are announcements, not algorithms, and are taken out
+  // before anything is chosen. A client that offered the *server's* marker as
+  // its first choice would otherwise "win" a key exchange named after a thing
+  // nobody can perform.
+  const marker = (name: string) => name === STRICT_KEX_CLIENT || name === STRICT_KEX_SERVER
+  const kex = negotiate(client.kex.filter(name => !marker(name)), server.kex.filter(name => !marker(name)))
   if (!kex)
     return { failed: 'key exchange' }
 
