@@ -161,6 +161,15 @@ async function ssh(port: number, command: string, options: {
 
   const bytes = new Uint8Array(stdout)
 
+  // 255 is every ssh failure there is: a refused connection, an unreadable
+  // key, a kex with nothing in common, and a protocol bug all arrive as the
+  // same number. An assertion on the code alone reports "expected 0, received
+  // 255" and sends whoever reads it looking in the wrong module, so the reason
+  // the client gave is printed here rather than discarded by a test that only
+  // looked at the code.
+  if (code !== 0 && stderr.trim())
+    console.error(`ssh exited ${code} on port ${port}: ${stderr.trim()}`)
+
   return { stdout: bytes, text: new TextDecoder().decode(bytes), stderr, code }
 }
 
