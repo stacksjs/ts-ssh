@@ -165,36 +165,53 @@ export class Transport {
    * until one starts `SSH-`.
    */
   private takeIdentification(): boolean {
-    const { lines, rest } = takeLines(this.incoming)
+    // Scanned here rather than through `takeLines`, because what matters is the
+    // *offset* the identification line ends at and `takeLines` only returns
+    // text. Reconstructing the offset afterwards by searching for the line
+    // again is what this used to do, and it could not work: `takeLines` strips
+    // the trailing `\r`, so the marker built from the parsed text was
+    // `SSH-2.0-...\n` while the wire carries `SSH-2.0-...\r\n`. The search
+    // never matched.
+    //
+    // The fallback when it did not match was the remainder after the *last*
+    // newline in the buffer - and a peer is entitled to put its identification
+    // and its KEXINIT in one segment. A KEXINIT is mostly random bytes (the
+    // cookie alone gives about a one in sixteen chance of containing 0x0A), so
+    // roughly one connection in ten resumed reading from the middle of it and
+    // died with a length like 1634038582, which is the ASCII "aes6" out of the
+    // algorithm list read as a number.
+    let start = 0
 
-    for (const line of lines) {
+    for (let index = 0; index < this.incoming.length; index++) {
+      if (this.incoming[index] !== 0x0A)
+        continue
+
+      const line = new TextDecoder().decode(this.incoming.subarray(start, index)).replace(/\r$/, '')
+      const next = index + 1
+
       const identification = parseIdentification(line)
       if (identification) {
         this.peer = identification
-        break
+        // The offset comes from the scan that just read the line, so it cannot
+        // disagree with it.
+        this.incoming = this.incoming.subarray(next)
+
+        return true
       }
 
       // Starts `SSH-` and did not parse: a version this does not speak, rather
       // than a banner line to skip past.
       if (line.startsWith('SSH-'))
         throw new ProtocolError(`The peer speaks a version this does not: ${line}`)
+
+      start = next
     }
 
-    if (!this.peer) {
-      this.incoming = rest
+    // No complete identification line yet. Whatever banner lines were consumed
+    // above stay consumed; the partial line waits for more bytes.
+    this.incoming = this.incoming.subarray(start)
 
-      return false
-    }
-
-    // Everything after the identification line is packets. `takeLines` gave
-    // back the remainder after the *last* line, which is wrong here: the bytes
-    // after the identification may include a packet that contains a newline.
-    // Find the line's end and take from there.
-    const marker = new TextEncoder().encode(`${this.peer.raw}\n`)
-    const at = indexOf(this.incoming, marker)
-    this.incoming = at === -1 ? rest : this.incoming.subarray(at + marker.length)
-
-    return true
+    return false
   }
 
   /** One whole packet from the buffer, or null when it has not all arrived. */

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { randomBytes } from 'node:crypto'
 import { ProtocolError } from '../src/buffer'
 import { createPacketCipher, keyLengthsFor } from '../src/cipher'
+import { framePacket } from '../src/packet'
 import { REKEY_PACKETS, Transport } from '../src/transport'
 
 const text = (value: string) => new TextEncoder().encode(value)
@@ -256,5 +257,94 @@ describe('bookkeeping', () => {
 
     expect(client.rekeyDue).toBe(false)
     expect(REKEY_PACKETS).toBeLessThan(2 ** 32)
+  })
+})
+
+describe('the identification line, and the packet glued to it', () => {
+  /**
+   * One TCP segment carrying the greeting and the first packet together.
+   *
+   * This is the normal case, not an edge one: OpenSSH sends its identification
+   * and its KEXINIT without waiting, and the two arrive as one read far more
+   * often than not.
+   */
+  function greetingWith(payload: Uint8Array, terminator = '\r\n'): Uint8Array {
+    const greeting = text(`SSH-2.0-peer${terminator}`)
+    const packet = framePacket(payload, 8, size => new Uint8Array(size).fill(0x0A))
+    const out = new Uint8Array(greeting.length + packet.length)
+
+    out.set(greeting)
+    out.set(packet, greeting.length)
+
+    return out
+  }
+
+  it('reads a packet that arrived with the greeting', () => {
+    const transport = new Transport({ software: 'ts-ssh' })
+    const payload = text('a payload with no newline in it')
+
+    transport.push(greetingWith(payload))
+
+    expect(transport.next()).toEqual(payload)
+  })
+
+  it('reads one containing a newline, glued to a CRLF greeting', () => {
+    const transport = new Transport({ software: 'ts-ssh' })
+
+    // 0x0A anywhere in the packet used to decide where the greeting ended.
+    // The greeting was located by rebuilding its text and searching for it,
+    // and the rebuilt text had lost the `\r` - so the search never matched and
+    // the code fell back to "everything after the last newline in the buffer",
+    // which lands in the middle of this payload.
+    //
+    // A KEXINIT is mostly random bytes, so about one connection in ten hit it:
+    // the server read an algorithm name as a packet length and disconnected the
+    // client mid handshake. Deterministic here, and it was not deterministic
+    // anywhere else.
+    const payload = text('aes256-ctr\nhmac-sha2-512\naes128-ctr')
+
+    transport.push(greetingWith(payload))
+
+    expect(transport.next()).toEqual(payload)
+  })
+
+  it('reads one glued to a bare-LF greeting too', () => {
+    const transport = new Transport({ software: 'ts-ssh' })
+    const payload = text('line one\nline two')
+
+    // The RFC says CR LF and some implementations send only LF. Both have to
+    // find the same offset.
+    transport.push(greetingWith(payload, '\n'))
+
+    expect(transport.next()).toEqual(payload)
+  })
+
+  it('skips banner lines before the identification', () => {
+    const transport = new Transport({ software: 'ts-ssh' })
+    const payload = text('after\nthe\nbanner')
+    const banner = text('a legal notice\r\nand another line\r\n')
+    const rest = greetingWith(payload)
+    const out = new Uint8Array(banner.length + rest.length)
+
+    out.set(banner)
+    out.set(rest, banner.length)
+
+    transport.push(out)
+
+    expect(transport.next()).toEqual(payload)
+  })
+
+  it('waits when the greeting has not all arrived', () => {
+    const transport = new Transport({ software: 'ts-ssh' })
+    const payload = text('split\nacross\nreads')
+    const whole = greetingWith(payload)
+
+    // Split inside the identification line, which is where an offset kept
+    // across calls goes wrong.
+    transport.push(whole.subarray(0, 6))
+    expect(transport.next()).toBeNull()
+
+    transport.push(whole.subarray(6))
+    expect(transport.next()).toEqual(payload)
   })
 })

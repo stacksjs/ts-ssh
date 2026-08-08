@@ -94,6 +94,14 @@ interface Connection {
   queue: Promise<void>
   /** Bytes the socket has not taken yet. */
   backlog: Uint8Array
+  /**
+   * Set while `pump` is inside `socket.write`.
+   *
+   * `write` can call `drain` synchronously, and `drain` calls `pump`. Without
+   * this the nested call finds the backlog it is already writing and sends it
+   * a second time.
+   */
+  pumping: boolean
   channels: Map<number, Outgoing>
 }
 
@@ -121,16 +129,31 @@ export function serve(options: ServeOptions): Server {
           authenticate: options.authenticate,
         })
 
-        socket.data = { session, queue: Promise.resolve(), backlog: new Uint8Array(0), channels: new Map() }
+        socket.data = { session, queue: Promise.resolve(), backlog: new Uint8Array(0), pumping: false, channels: new Map() }
         enqueue(socket, session.start())
       },
 
       data(socket, chunk) {
         const connection = socket.data
 
+        // Copied here, synchronously, and that is the whole point of this line.
+        //
+        // Bun reuses the buffer it hands this callback for the next read, so it
+        // is only ours until `data` returns. `receive` does not run here - it
+        // runs later, on the queue that serialises it - so a copy taken inside
+        // that callback is taken after the buffer has been handed back, and
+        // copies whatever the *next* chunk overwrote it with.
+        //
+        // The result is that the server reads the peer's stream at the wrong
+        // offset and disconnects it with "Packet length 1634038582 is out of
+        // range" - which is 0x61657336, the ASCII "aes6" from the middle of the
+        // client's KEXINIT algorithm list, read as a length. It happened on
+        // roughly one connection in ten and looked like a flaky test.
+        const bytes = new Uint8Array(chunk)
+
         connection.queue = connection.queue.then(async () => {
           try {
-            const outcome = await connection.session.receive(new Uint8Array(chunk))
+            const outcome = await connection.session.receive(bytes)
             enqueue(socket, outcome.send)
 
             for (const event of outcome.events)
@@ -304,23 +327,53 @@ function enqueue(socket: ServerSocket, bytes: Uint8Array, send = true): void {
  * is full; what is left waits for `drain`. Treating the return value as "all of
  * it" is the bug this function exists to not have.
  */
+/** One shared empty view, so advancing the backlog costs no allocation. */
+const EMPTY = new Uint8Array(0)
+
 function pump(socket: ServerSocket): void {
   const connection = socket.data
 
-  while (connection.backlog.length > 0) {
-    const pending = connection.backlog
-    const written = socket.write(pending)
+  // `socket.write` can invoke `drain` before it returns, and `drain` calls
+  // straight back into here. The re-entrant call used to find `connection
+  // .backlog` still holding the bytes the outer call was in the middle of
+  // writing - the advance happened afterwards - and write them a second time.
+  //
+  // Duplicated bytes are not a lost packet, which is why this was so hard to
+  // read: the peer frames the duplicate as a length and gets a number like
+  // 2707215765, then disconnects with "Packet length out of range" partway
+  // through a key exchange that was going fine. It reproduced on roughly one
+  // connection in six, moving between tests, and looked exactly like flake.
+  if (connection.pumping)
+    return
 
-    if (written <= 0)
-      return
+  connection.pumping = true
 
-    connection.backlog = pending.subarray(written)
+  try {
+    while (connection.backlog.length > 0) {
+      const pending = connection.backlog
 
-    // Took some but not all: the socket is full and the rest waits for `drain`.
-    if (written < pending.length)
-      return
+      // Advanced *before* the write, not after. A `drain` that arrives while
+      // we are inside `write` must not find these bytes still queued.
+      connection.backlog = EMPTY
+
+      const written = socket.write(pending)
+
+      // Took some but not all - the normal way a socket says it is full - or
+      // took none at all. What is left goes back at the front, ahead of
+      // anything a re-entrant handler queued in the meantime, because a
+      // stream that arrives out of order is a stream the peer cannot frame.
+      if (written < pending.length) {
+        connection.backlog = concat(pending.subarray(Math.max(written, 0)), connection.backlog)
+
+        return
+      }
+    }
+  }
+  finally {
+    connection.pumping = false
   }
 }
+
 
 function asBytes(data: Uint8Array | string): Uint8Array {
   return typeof data === 'string' ? new TextEncoder().encode(data) : data
